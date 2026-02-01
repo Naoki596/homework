@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 
 import { TEAMS, type TeamId } from "@src/teams";
 import type { NewsItem, NewsResponse } from "@src/lib/news/types";
+import { ChatDock } from "./components/ChatDock";
 
 type UiState =
   | { kind: "idle" }
@@ -153,6 +154,14 @@ export default function Page() {
           )}
         </>
       ) : null}
+
+      <ChatDock
+        context={{
+          teamId: selected ?? null,
+          teamName: ui.kind === "success" ? ui.teamName : selectedTeam?.name ?? null,
+          items: ui.kind === "success" ? ui.items : []
+        }}
+      />
     </>
   );
 }
