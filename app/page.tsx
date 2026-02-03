@@ -88,7 +88,18 @@ export default function Page() {
                 aria-pressed={isSelected}
               >
                 <span className="badge" aria-hidden="true">
-                  {t.icon.type === "text" ? t.icon.value : "★"}
+                  <img
+                    className="badgeImg"
+                    src={`/api/team-logo?teamId=${encodeURIComponent(t.teamId)}`}
+                    alt=""
+                    loading="lazy"
+                    onLoad={(e) => e.currentTarget.classList.add("isLoaded")}
+                    onError={(e) => {
+                      // ロゴが見つからない場合は文字アイコンへフォールバック
+                      e.currentTarget.style.display = "none";
+                    }}
+                  />
+                  <span className="badgeFallback">{t.icon.type === "text" ? t.icon.value : "★"}</span>
                 </span>
                 <span className="teamName">{t.name}</span>
               </button>
