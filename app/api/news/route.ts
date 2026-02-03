@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { TTLCache } from "@src/lib/cache/ttlCache";
+import { fetchArticleContent } from "@src/lib/news/fetchArticleContent";
+import { fetchOfficialTeamNews } from "@src/lib/news/fetchOfficialTeamNews";
 import { fetchRssXml } from "@src/lib/news/fetchRss";
 import { normalizeNewsItems } from "@src/lib/news/normalize";
 import { parseRssXml } from "@src/lib/news/parseRss";
@@ -42,6 +44,20 @@ function buildQueryVariants(team: { name: string; queries: string[] }): string[]
   return variants;
 }
 
+async function mapLimit<T, R>(items: T[], limit: number, fn: (it: T, idx: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length) as R[];
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!, i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const teamId = url.searchParams.get("teamId");
@@ -56,6 +72,20 @@ export async function GET(req: Request) {
       message: "球団の指定が不正です。球団を選択して再試行してください。"
     };
     return NextResponse.json(body, { status: 400 });
+  }
+
+  // 公式サイトのニュース（直リンク）を優先して取得（失敗したら従来通りGoogleニュースへフォールバック）
+  try {
+    const items = await fetchOfficialTeamNews({ teamId: team.teamId, limit, timeoutMs: 6500, teamNameHint: team.name });
+    if (items.length > 0) {
+      const body: NewsResponse = { teamId: team.teamId, teamName: team.name, items };
+      return NextResponse.json(body, {
+        status: 200,
+        headers: { "Cache-Control": "public, max-age=0, s-maxage=120" }
+      });
+    }
+  } catch {
+    // ignore and fallback
   }
 
   const queryVariants = buildQueryVariants(team);
@@ -89,14 +119,21 @@ export async function GET(req: Request) {
       const items = normalizeNewsItems(feed.items ?? [], { maxItems: limit });
       if (debug) debugLog.push({ query: q, step: "normalizedItems", detail: String(items.length) });
 
+      // 本文（抜粋）を取得して items に付与（取得できない場合はスキップ）
+      // - 最大3件想定だが、limit が増えても暴走しないよう並列数を制限
+      const itemsWithContent = await mapLimit(items, 3, async (it) => {
+        const content = await fetchArticleContent(it.url, { timeoutMs: 6500, maxChars: 2200 });
+        return content ? { ...it, content } : it;
+      });
+
       const body: NewsResponse = {
         teamId: team.teamId,
         teamName: team.name,
-        items
+        items: itemsWithContent
       };
       cache.set(cacheKey, body);
 
-      if (items.length > 0) {
+      if (itemsWithContent.length > 0) {
         return NextResponse.json(body, {
           status: 200,
           headers: {
