@@ -10,6 +10,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const EXTENSIONS = [".png", ".webp", ".jpg", ".jpeg", ".svg"] as const;
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 function contentTypeForExt(ext: string): string {
   switch (ext.toLowerCase()) {
@@ -38,6 +43,10 @@ function logoDirCandidates(): string[] {
   return [
     ...(envDir ? [envDir] : []),
     path.join(process.cwd(), "team-logos"),
+    // ワークスペースに `12球団ロゴ/` が含まれている場合（homework の隣に置く運用）
+    path.resolve(process.cwd(), "..", "12球団ロゴ"),
+    // リポジトリ直下に置いた場合
+    path.resolve(process.cwd(), "12球団ロゴ"),
     path.join(home, "OneDrive", "画像", "ドキュメント", "12球団ロゴ"),
     path.join(home, "OneDrive", "Documents", "12球団ロゴ")
   ];
@@ -70,21 +79,32 @@ export async function GET(req: Request) {
   const baseName = team?.name ?? name;
 
   if (!baseName) {
-    return NextResponse.json({ error: "teamId or name is required" }, { status: 400 });
+    return NextResponse.json({ error: "teamId or name is required" }, { status: 400, headers: NO_STORE_HEADERS });
   }
 
   const hit = await findLogoFile(baseName);
   if (!hit) {
-    return NextResponse.json({ error: "logo not found" }, { status: 404 });
+    return NextResponse.json({ error: "logo not found" }, { status: 404, headers: NO_STORE_HEADERS });
   }
 
-  const buf = await fs.readFile(hit.filePath);
+  let buf: Buffer;
+  try {
+    buf = await fs.readFile(hit.filePath);
+  } catch (e) {
+    // OneDrive等で一瞬ロックされるケースを軽くリトライ
+    const code = (e as { code?: string } | null)?.code;
+    if (code === "EBUSY" || code === "EPERM" || code === "EACCES") {
+      await sleep(80);
+      buf = await fs.readFile(hit.filePath);
+    } else {
+      throw e;
+    }
+  }
   return new NextResponse(buf, {
     status: 200,
     headers: {
       "Content-Type": contentTypeForExt(hit.ext),
-      // ローカルファイル前提なので強キャッシュは避ける（ただし同一セッション内は軽く効かせる）
-      "Cache-Control": "public, max-age=0, s-maxage=3600"
+      ...NO_STORE_HEADERS
     }
   });
 }

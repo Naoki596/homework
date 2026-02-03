@@ -162,7 +162,7 @@ a {
   outline: 0;
 }
 
-.badgeImg.isLoaded {
+.badge[data-logo="loaded"] .badgeImg {
   opacity: 1;
 }
 
@@ -173,8 +173,12 @@ a {
   place-items: center;
 }
 
-.badgeImg.isLoaded + .badgeFallback {
+.badge[data-logo="loaded"] .badgeFallback {
   opacity: 0;
+}
+
+.badge[data-logo="error"] .badgeImg {
+  display: none;
 }
 
 .teamName {

@@ -87,16 +87,23 @@ export default function Page() {
                 }}
                 aria-pressed={isSelected}
               >
-                <span className="badge" aria-hidden="true">
+                <span className="badge" aria-hidden="true" data-logo="loading">
                   <img
                     className="badgeImg"
                     src={`/api/team-logo?teamId=${encodeURIComponent(t.teamId)}`}
                     alt=""
                     loading="lazy"
-                    onLoad={(e) => e.currentTarget.classList.add("isLoaded")}
+                    ref={(img) => {
+                      // キャッシュ済みで onLoad が発火しないケースでも「ロゴあり」を確実に反映する
+                      if (!img) return;
+                      if (img.complete && img.naturalWidth > 0) {
+                        img.parentElement?.setAttribute("data-logo", "loaded");
+                      }
+                    }}
+                    onLoad={(e) => e.currentTarget.parentElement?.setAttribute("data-logo", "loaded")}
                     onError={(e) => {
-                      // ロゴが見つからない場合は文字アイコンへフォールバック
-                      e.currentTarget.style.display = "none";
+                      // ロゴが見つからない/読み込み失敗時は確実にフォールバックを表示
+                      e.currentTarget.parentElement?.setAttribute("data-logo", "error");
                     }}
                   />
                   <span className="badgeFallback">{t.icon.type === "text" ? t.icon.value : "★"}</span>
