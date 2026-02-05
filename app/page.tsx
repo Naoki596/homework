@@ -90,7 +90,7 @@ export default function Page() {
                 <span className="badge" aria-hidden="true" data-logo="loading">
                   <img
                     className="badgeImg"
-                    src={`/api/team-logo?teamId=${encodeURIComponent(t.teamId)}`}
+                    src={`/team-logos/${encodeURIComponent(t.teamId)}.png`}
                     alt=""
                     loading="lazy"
                     ref={(img) => {

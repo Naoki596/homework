@@ -100,7 +100,10 @@ export async function GET(req: Request) {
       throw e;
     }
   }
-  return new NextResponse(buf, {
+  // NextResponse の body は Web 標準の BodyInit を期待するため、
+  // Node の Buffer を Uint8Array に変換して返す（型エラー回避 + 互換性確保）
+  const body = new Uint8Array(buf);
+  return new NextResponse(body, {
     status: 200,
     headers: {
       "Content-Type": contentTypeForExt(hit.ext),
