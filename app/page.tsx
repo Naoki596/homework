@@ -39,7 +39,7 @@ export default function Page() {
     if (!id) return;
     setUi({ kind: "loading" });
     try {
-      const res = await fetch(`/api/news?teamId=${encodeURIComponent(id)}`, {
+      const res = await fetch(`/api/news?teamId=${encodeURIComponent(id)}&withContent=1`, {
         method: "GET",
         headers: { accept: "application/json" }
       });

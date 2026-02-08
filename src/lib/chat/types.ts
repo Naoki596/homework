@@ -11,10 +11,11 @@ export type ChatRequestBody = {
   context?: ChatContext;
   /**
    * 利用するAIプロバイダ（任意）。
-   * - "auto": サーバ側のデフォルト（現在はOpenRouter）を使う
+   * - "auto": サーバ側のデフォルト（現在はGemini）を使う
    * - "openrouter": OpenRouter を使う
+   * - "gemini": Google Gemini を使う
    */
-  provider?: "auto" | "openrouter";
+  provider?: "auto" | "openrouter" | "gemini";
   /**
    * クライアント側のモデル選択（任意）。
    * サーバ側で allowlist により検証・丸め込みを行うこと。
@@ -36,7 +37,7 @@ export type ChatResponseBody = {
   sources?: ChatSource[];
   meta?: {
     mode: "basic" | "advanced";
-    provider: "rule" | "openrouter";
+    provider: "rule" | "openrouter" | "gemini";
     fallback: boolean;
     /**
      * 利用したモデルID（分かる範囲で）。
