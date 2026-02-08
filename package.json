@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "jsdom": "^28.0.0",
+    "jsdom": "26.1.0",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest",
