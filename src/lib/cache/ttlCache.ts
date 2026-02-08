@@ -5,12 +5,12 @@ export class TTLCache<V> {
 
   constructor(private readonly defaultTtlMs: number) {}
 
-  get(key: string): V | null {
+  get(key: string): V | undefined {
     const entry = this.store.get(key);
-    if (!entry) return null;
+    if (!entry) return undefined;
     if (Date.now() >= entry.expiresAt) {
       this.store.delete(key);
-      return null;
+      return undefined;
     }
     return entry.value;
   }

@@ -20,6 +20,13 @@ function clampLimit(raw: string | null): number {
   return Math.min(Math.max(n, 1), 10);
 }
 
+function clampBudgetMs(raw: string | null): number {
+  const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  // VercelのServerless Functionは短い上限があるため、デフォルトは短めに抑える
+  if (!Number.isFinite(n)) return 8500;
+  return Math.min(Math.max(n, 2500), 25_000);
+}
+
 function buildGoogleNewsRssUrl(query: string): string {
   const q = encodeURIComponent(query);
   return `https://news.google.com/rss/search?q=${q}&hl=ja&gl=JP&ceid=JP:ja`;
@@ -59,135 +66,185 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (it: T, idx: number
 }
 
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const teamId = url.searchParams.get("teamId");
-  const limit = clampLimit(url.searchParams.get("limit"));
-  const debug = url.searchParams.get("debug") === "1";
-  const noCache = url.searchParams.get("noCache") === "1";
-
-  const team = getTeam(teamId);
-  if (!team) {
-    const body: NewsResponse = {
-      errorCode: "INVALID_TEAM",
-      message: "球団の指定が不正です。球団を選択して再試行してください。"
-    };
-    return NextResponse.json(body, { status: 400 });
-  }
-
-  // 公式サイトのニュース（直リンク）を優先して取得（失敗したら従来通りGoogleニュースへフォールバック）
+  const startedAt = Date.now();
   try {
-    const items = await fetchOfficialTeamNews({ teamId: team.teamId, limit, timeoutMs: 6500, teamNameHint: team.name });
-    if (items.length > 0) {
-      const body: NewsResponse = { teamId: team.teamId, teamName: team.name, items };
-      return NextResponse.json(body, {
-        status: 200,
-        headers: { "Cache-Control": "public, max-age=0, s-maxage=120" }
-      });
-    }
-  } catch {
-    // ignore and fallback
-  }
+    const url = new URL(req.url);
+    const teamId = url.searchParams.get("teamId");
+    const limit = clampLimit(url.searchParams.get("limit"));
+    const debug = url.searchParams.get("debug") === "1";
+    const noCache = url.searchParams.get("noCache") === "1";
+    const budgetMs = clampBudgetMs(url.searchParams.get("budgetMs"));
+    const preferOfficial = url.searchParams.get("official") === "1";
+    const withContent = url.searchParams.get("withContent") === "1";
 
-  const queryVariants = buildQueryVariants(team);
-  const debugLog: Array<{ query: string; step: string; detail?: string }> = [];
-  let hadAnyError = false;
-  let lastErrorMessage: string | null = null;
+    const deadlineAt = startedAt + budgetMs;
+    const timeLeftMs = () => Math.max(0, deadlineAt - Date.now());
+    const stepTimeoutMs = (max: number, min: number = 900) => {
+      // 次の処理に少し余裕を残す
+      const left = timeLeftMs() - 250;
+      return Math.max(min, Math.min(max, left));
+    };
 
-  for (const q of queryVariants) {
-    const cacheKey = `news:${team.teamId}:limit=${limit}:q=${q}`;
-    if (!noCache) {
-      const cached = cache.get(cacheKey);
-      if (cached) {
-        // 0件のキャッシュは次の候補へ（ヒット率を優先）
-        if ("items" in cached && cached.items.length === 0) continue;
-        return NextResponse.json(cached, {
-          status: "items" in cached ? 200 : 502,
-          headers: {
-            "Cache-Control": "public, max-age=0, s-maxage=300"
-          }
-        });
-      }
-    }
-
-    try {
-      const rssUrl = buildGoogleNewsRssUrl(q);
-      if (debug) debugLog.push({ query: q, step: "fetch", detail: rssUrl });
-      const xml = await fetchRssXml(rssUrl, { timeoutMs: 6500 });
-      if (debug) debugLog.push({ query: q, step: "xmlLen", detail: String(xml.length) });
-      const feed = await parseRssXml(xml);
-      if (debug) debugLog.push({ query: q, step: "parsedItems", detail: String(feed.items?.length ?? 0) });
-      const items = normalizeNewsItems(feed.items ?? [], { maxItems: limit });
-      if (debug) debugLog.push({ query: q, step: "normalizedItems", detail: String(items.length) });
-
-      // 本文（抜粋）を取得して items に付与（取得できない場合はスキップ）
-      // - 最大3件想定だが、limit が増えても暴走しないよう並列数を制限
-      const itemsWithContent = await mapLimit(items, 3, async (it) => {
-        const content = await fetchArticleContent(it.url, { timeoutMs: 6500, maxChars: 2200 });
-        return content ? { ...it, content } : it;
-      });
-
+    const team = getTeam(teamId);
+    if (!team) {
       const body: NewsResponse = {
-        teamId: team.teamId,
-        teamName: team.name,
-        items: itemsWithContent
+        errorCode: "INVALID_TEAM",
+        message: "球団の指定が不正です。球団を選択して再試行してください。"
       };
-      cache.set(cacheKey, body);
+      return NextResponse.json(body, { status: 400 });
+    }
 
-      if (itemsWithContent.length > 0) {
-        return NextResponse.json(body, {
-          status: 200,
-          headers: {
-            "Cache-Control": "public, max-age=0, s-maxage=300"
-          }
+    const debugLog: Array<{ query: string; step: string; detail?: string }> = [];
+    const pushDebug = (query: string, step: string, detail?: string) => {
+      if (!debug) return;
+      debugLog.push({ query, step, detail });
+    };
+
+    // 公式サイトのニュース（スクレイピング）は時間がかかりやすいので、明示指定時のみ実行
+    if (preferOfficial && timeLeftMs() >= 1500) {
+      try {
+        const items = await fetchOfficialTeamNews({
+          teamId: team.teamId,
+          limit,
+          timeoutMs: stepTimeoutMs(3500),
+          teamNameHint: team.name
         });
+        if (items.length > 0) {
+          const body: NewsResponse = { teamId: team.teamId, teamName: team.name, items };
+          return NextResponse.json(body, {
+            status: 200,
+            headers: { "Cache-Control": "public, max-age=0, s-maxage=120" }
+          });
+        }
+      } catch (e) {
+        pushDebug("official", "error", e instanceof Error ? e.message : "unknown error");
+        // ignore and fallback
       }
-      // 0件ならフォールバック続行（最後まで0件なら最終的に返す）
-      continue;
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "unknown error";
-      hadAnyError = true;
-      lastErrorMessage = message;
-      if (debug) debugLog.push({ query: q, step: "error", detail: message });
+    }
+
+    // 外部ネットワーク遅延で実行時間を超えやすいので、候補クエリは上限を設ける
+    const queryVariants = buildQueryVariants(team).slice(0, 4);
+    let hadAnyError = false;
+    let lastErrorMessage: string | null = null;
+
+    for (const q of queryVariants) {
+      // 時間切れ手前なら諦めて返す（Vercel側で強制終了→500になるのを避ける）
+      if (timeLeftMs() < 900) {
+        hadAnyError = true;
+        lastErrorMessage = "deadline";
+        pushDebug(q, "deadline", `timeLeftMs=${timeLeftMs()}`);
+        break;
+      }
+
+      const cacheKey = `news:${team.teamId}:limit=${limit}:q=${q}:official=${preferOfficial ? 1 : 0}:withContent=${withContent ? 1 : 0}`;
+      if (!noCache) {
+        const cached = cache.get(cacheKey);
+        if (cached) {
+          // 0件のキャッシュは次の候補へ（ヒット率を優先）
+          if ("items" in cached && cached.items.length === 0) continue;
+          return NextResponse.json(cached, {
+            status: "items" in cached ? 200 : 502,
+            headers: {
+              "Cache-Control": "public, max-age=0, s-maxage=300"
+            }
+          });
+        }
+      }
+
+      try {
+        const rssUrl = buildGoogleNewsRssUrl(q);
+        pushDebug(q, "fetch", rssUrl);
+        const xml = await fetchRssXml(rssUrl, { timeoutMs: stepTimeoutMs(3500) });
+        pushDebug(q, "xmlLen", String(xml.length));
+        const feed = await parseRssXml(xml);
+        pushDebug(q, "parsedItems", String(feed.items?.length ?? 0));
+        const items = normalizeNewsItems(feed.items ?? [], { maxItems: limit });
+        pushDebug(q, "normalizedItems", String(items.length));
+
+        // 本文（抜粋）取得は重いので、明示指定時のみ（かつ時間が残っている場合のみ）
+        const itemsWithContent =
+          withContent && items.length > 0 && timeLeftMs() >= 2000
+            ? await mapLimit(items, 2, async (it) => {
+                const content = await fetchArticleContent(it.url, {
+                  timeoutMs: stepTimeoutMs(2500, 800),
+                  maxChars: 2200
+                });
+                return content ? { ...it, content } : it;
+              })
+            : items;
+
+        const body: NewsResponse = {
+          teamId: team.teamId,
+          teamName: team.name,
+          items: itemsWithContent
+        };
+        cache.set(cacheKey, body);
+
+        if (itemsWithContent.length > 0) {
+          return NextResponse.json(body, {
+            status: 200,
+            headers: {
+              "Cache-Control": "public, max-age=0, s-maxage=300"
+            }
+          });
+        }
+        // 0件ならフォールバック続行（最後まで0件なら最終的に返す）
+        continue;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "unknown error";
+        hadAnyError = true;
+        lastErrorMessage = message;
+        pushDebug(q, "error", message);
+        const body: NewsResponse = {
+          errorCode: "FETCH_FAILED",
+          message: `ニュースを取得できませんでした。時間をおいて再試行してください。（${message}）`
+        };
+        cache.set(cacheKey, body, 60 * 1000); // エラーは短めにキャッシュ
+        // 取得失敗は次候補で回復する場合もあるので続行
+        continue;
+      }
+    }
+
+    if (debug) {
+      return NextResponse.json(
+        {
+          teamId: team.teamId,
+          teamName: team.name,
+          items: [],
+          debug: debugLog
+        },
+        { status: hadAnyError ? 502 : 200 }
+      );
+    }
+
+    if (hadAnyError) {
       const body: NewsResponse = {
         errorCode: "FETCH_FAILED",
-        message: `ニュースを取得できませんでした。時間をおいて再試行してください。（${message}）`
+        message: `ニュースを取得できませんでした。時間をおいて再試行してください。（${lastErrorMessage ?? "unknown error"}）`
       };
-      cache.set(cacheKey, body, 60 * 1000); // エラーは短めにキャッシュ
-      // 取得失敗は次候補で回復する場合もあるので続行
-      continue;
+      return NextResponse.json(body, { status: 502 });
     }
-  }
 
-  if (debug) {
-    return NextResponse.json(
-      {
-        teamId: team.teamId,
-        teamName: team.name,
-        items: [],
-        debug: debugLog
-      },
-      { status: hadAnyError ? 502 : 200 }
-    );
-  }
-
-  if (hadAnyError) {
+    const body: NewsResponse = {
+      teamId: team.teamId,
+      teamName: team.name,
+      items: []
+    };
+    return NextResponse.json(body, {
+      status: 200,
+      headers: {
+        "Cache-Control": "public, max-age=0, s-maxage=300"
+      }
+    });
+  } catch (e) {
+    // 例外でNextのHTMLエラーになると、フロントのres.json()が落ちて「通信失敗」に見えてしまうため、必ずJSONで返す
+    const msg = e instanceof Error ? e.message : "unknown error";
+    console.error("[api/news] unhandled error", e);
     const body: NewsResponse = {
       errorCode: "FETCH_FAILED",
-      message: `ニュースを取得できませんでした。時間をおいて再試行してください。（${lastErrorMessage ?? "unknown error"}）`
+      message: `ニュースを取得できませんでした。時間をおいて再試行してください。（${msg}）`
     };
-    return NextResponse.json(body, { status: 502 });
+    return NextResponse.json(body, { status: 500 });
   }
-
-  const body: NewsResponse = {
-    teamId: team.teamId,
-    teamName: team.name,
-    items: []
-  };
-  return NextResponse.json(body, {
-    status: 200,
-    headers: {
-      "Cache-Control": "public, max-age=0, s-maxage=300"
-    }
-  });
 }
 
