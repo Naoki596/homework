@@ -7,6 +7,11 @@ import {
   OpenRouterRateLimitError,
   generateOpenRouterAdvancedReply
 } from "@src/lib/chat/openrouter";
+import {
+  GeminiRateLimitError,
+  GeminiBlockedError,
+  generateGeminiReply
+} from "@src/lib/chat/gemini";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,14 +43,28 @@ export async function POST(req: Request) {
       return NextResponse.json(advanced, { status: 200 });
     }
 
-    // auto: いずれかへ自動切替は行わない（プロバイダ間フォールバック禁止）
-    const advanced = await generateOpenRouterAdvancedReply({ message, context, headers: req.headers, model: body?.model });
-    if (!advanced.meta) advanced.meta = { mode: "advanced", provider: "openrouter", fallback: false };
+    // gemini or auto → Gemini をデフォルトプロバイダとして使う
+    const advanced = await generateGeminiReply({
+      message,
+      context,
+      headers: req.headers,
+      model: body?.model
+    });
+    if (!advanced.meta) advanced.meta = { mode: "advanced", provider: "gemini", fallback: false };
     return NextResponse.json(advanced, { status: 200 });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown error";
     const fallback = buildChatReply({ message: body?.message, context: body?.context });
     const pretty = (() => {
+      if (e instanceof GeminiRateLimitError) {
+        return "Geminiの利用制限に達しました。1〜2分ほど待ってから再試行してください。";
+      }
+      if (e instanceof GeminiBlockedError) {
+        return `Geminiの安全フィルタにより応答がブロックされました。質問を変えてお試しください。`;
+      }
+      if (msg === "GEMINI_API_KEY is not set") {
+        return "Gemini APIキーが設定されていません。管理者にお問い合わせください。";
+      }
       if (e instanceof OpenRouterPaymentRequiredError) {
         return "OpenRouterの支払い/上限設定によりAIが利用できませんでした（402）。OpenRouter側のキー上限（spend limit）や残高を確認してください。";
       }

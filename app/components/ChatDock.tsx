@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { NewsItem } from "@src/lib/news/types";
 import { OPENROUTER_MODEL_OPTIONS } from "@src/lib/chat/openrouterModels";
+import { GEMINI_MODEL_OPTIONS } from "@src/lib/chat/geminiModels";
 import type { ChatResponseBody } from "@src/lib/chat/types";
 
 type ChatRole = "user" | "assistant" | "system";
@@ -49,18 +50,18 @@ export function ChatDock(props: { context: ChatContext }) {
   const [isSending, setIsSending] = useState(false);
   const [input, setInput] = useState("");
   const quotaNote = "AI: 自動/指定ともにプロバイダ間フォールバックなし（失敗時は通常解説）";
-  const defaultModel = OPENROUTER_MODEL_OPTIONS[0]?.id ?? "openai/gpt-4o-mini";
+  const defaultModel = GEMINI_MODEL_OPTIONS[0]?.id ?? "gemini-2.5-flash";
   const [selectedModel, setSelectedModel] = useState<string>(defaultModel);
-  const [provider, setProvider] = useState<"auto" | "openrouter">("auto");
+  const [provider, setProvider] = useState<"auto" | "openrouter" | "gemini">("auto");
   const [messages, setMessages] = useState<ChatMessage[]>(() => [
     {
       id: uid(),
       role: "system",
       createdAt: nowIso(),
       text:
-        "チャットへようこそ。\n" +
-        "例）「1のキーワードを教えて」「2を短く要約して」\n" +
-        "※この記事の本文は取得していないので、RSSの要点（抜粋）をもとに案内します。"
+        "チャットへようこそ！\n" +
+        "ニュースについて自由に質問できます。\n" +
+        "例）「このニュースについて詳しく教えて」「ドラフトの仕組みは？」"
     }
   ]);
 
@@ -97,7 +98,11 @@ export function ChatDock(props: { context: ChatContext }) {
     // 好みのモデルを永続化（UIだけの話で、最終的な検証はサーバ側allowlistで行う）
     try {
       const saved = window.localStorage.getItem("chat:model");
-      if (saved && OPENROUTER_MODEL_OPTIONS.some((m) => m.id === saved)) {
+      if (
+        saved &&
+        (GEMINI_MODEL_OPTIONS.some((m) => m.id === saved) ||
+          OPENROUTER_MODEL_OPTIONS.some((m) => m.id === saved))
+      ) {
         setSelectedModel(saved);
       }
     } catch {
@@ -116,11 +121,8 @@ export function ChatDock(props: { context: ChatContext }) {
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem("chat:provider");
-      if (saved === "auto" || saved === "openrouter") {
+      if (saved === "auto" || saved === "openrouter" || saved === "gemini") {
         setProvider(saved);
-      } else if (saved === "gemini") {
-        // 旧設定の互換（Gemini廃止後はautoへ丸める）
-        setProvider("auto");
       }
     } catch {
       // no-op
@@ -151,8 +153,9 @@ export function ChatDock(props: { context: ChatContext }) {
           message: text,
           context,
           provider,
-          // OpenRouter利用時のみ意味がある（サーバ側ではallowlistで検証）
-          model: provider === "openrouter" ? selectedModel : undefined
+          model: provider === "auto" || provider === "gemini" || provider === "openrouter"
+            ? selectedModel
+            : undefined
         })
       });
       const data = (await res.json()) as ChatResponseBody;
@@ -196,11 +199,21 @@ export function ChatDock(props: { context: ChatContext }) {
             <select
               id="chatProviderSelect"
               value={provider}
-              onChange={(e) => setProvider(e.target.value as "auto" | "openrouter")}
+              onChange={(e) => {
+                const v = e.target.value as "auto" | "openrouter" | "gemini";
+                setProvider(v);
+                // プロバイダ切替時にモデルも合わせる
+                if (v === "openrouter") {
+                  setSelectedModel(OPENROUTER_MODEL_OPTIONS[0]?.id ?? "openai/gpt-4o-mini");
+                } else {
+                  setSelectedModel(GEMINI_MODEL_OPTIONS[0]?.id ?? "gemini-2.5-flash");
+                }
+              }}
               style={{ padding: "6px 8px", borderRadius: 8 }}
               aria-label="利用するAIプロバイダ"
             >
-              <option value="auto">自動（推奨）</option>
+              <option value="auto">自動（Gemini・推奨）</option>
+              <option value="gemini">Gemini</option>
               <option value="openrouter">OpenRouter</option>
             </select>
 
@@ -213,9 +226,8 @@ export function ChatDock(props: { context: ChatContext }) {
               onChange={(e) => setSelectedModel(e.target.value)}
               style={{ padding: "6px 8px", borderRadius: 8 }}
               aria-label="利用するAIモデル"
-              disabled={provider !== "openrouter"}
             >
-              {OPENROUTER_MODEL_OPTIONS.map((m) => (
+              {(provider === "openrouter" ? OPENROUTER_MODEL_OPTIONS : GEMINI_MODEL_OPTIONS).map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}
                 </option>
@@ -253,7 +265,7 @@ export function ChatDock(props: { context: ChatContext }) {
               className="chatInput"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder='例）"1のキーワードを教えて"'
+              placeholder="ニュースについて自由に質問してください"
               rows={2}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
